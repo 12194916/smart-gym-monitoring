@@ -1,0 +1,46 @@
+We are building a tightly scoped computer vision MVP for an internal product. This project is focused on analyzing pre-recorded workout videos to demonstrate core technical capability for identifying people, classifying exercises, and counting repetitions using pose estimation.
+
+This is an applied engineering project, not academic research and not a production deployment. The initial output will be used internally for demonstration and board review.
+
+What you will work on:
+You will build a Python-based pipeline that processes workout video files we provide and outputs structured analysis results. Specifically, the system should:
+	•	Identify known individuals in video clips using facial embeddings (closed-set recognition)
+	•	Classify the exercise being performed from a small, fixed set of exercises
+	•	Count repetitions for at least one exercise (for example squats) using pose-based heuristics
+	•	Output results in a structured format including identified user, exercise label, rep count, per-rep timestamps, and confidence scores
+
+A simple script or lightweight demo output is sufficient. UI polish is not a focus.
+
+Scope constraints:
+	•	Pre-recorded video only (no live streaming)
+	•	Single primary subject per clip
+	•	Small known user set (we will provide enrollment images)
+	•	Limited exercise set (approximately 5–8 exercises)
+	•	Rep counting required for at least one exercise
+	•	Python implementation
+	•	Cloud or local GPU friendly (mobile or on-device optimization is out of scope)
+
+Deliverables:
+	•	Python code implementing the full video analysis pipeline
+	•	Clear separation between face identification, exercise classification, and rep counting logic
+	•	Sample outputs on provided video files
+	•	Short README explaining how to run the pipeline and describing the architecture
+
+Required experience:
+	•	Strong Python skills
+	•	Computer vision fundamentals
+	•	Experience with video processing and OpenCV
+	•	Experience with pose estimation
+	•	Experience with deep learning frameworks such as PyTorch or TensorFlow
+	•	Ability to design clean, modular systems
+
+Nice to have:
+	•	Facial recognition or embedding-based identity systems
+	•	Human activity or action recognition experience
+	•	Prior work in fitness, sports, or biomechanics
+	•	GPU inference or model optimization experience
+
+Engagement details:
+	•	Start on Monday (February 23)
+	•	Duration approximately 4–6 weeks
+	•	Hourly contract
