@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Data (large files - download separately)
+data/videos/*
+data/models/*
+data/enrollment/*
+data/gallery.pkl
+!data/videos/.gitkeep
+!data/models/.gitkeep
+!data/enrollment/.gitkeep
+
+# Outputs
+outputs/*
+!outputs/.gitkeep
+
+# Environment
+.env
+
+# Jupyter
+.ipynb_checkpoints/

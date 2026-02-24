@@ -1,0 +1,58 @@
+"""YAML configuration loader with typed dataclasses."""
+
+from dataclasses import dataclass, field
+from typing import List, Tuple
+
+
+@dataclass
+class FaceIDConfig:
+    model_name: str = "buffalo_l"
+    gallery_path: str = "data/gallery.pkl"
+    enrollment_dir: str = "data/enrollment"
+    det_size: Tuple[int, int] = (640, 640)
+    similarity_threshold: float = 0.4
+    max_identification_frames: int = 60
+    providers: List[str] = field(default_factory=lambda: ["CUDAExecutionProvider", "CPUExecutionProvider"])
+
+
+@dataclass
+class PoseConfig:
+    model_path: str = "data/models/pose_landmarker_heavy.task"
+    min_detection_confidence: float = 0.5
+    min_tracking_confidence: float = 0.5
+
+
+@dataclass
+class ExerciseConfig:
+    classifier_model_path: str = "data/models/exercise_classifier.pkl"
+    classification_interval_frames: int = 15
+    window_size: int = 30
+    min_classification_score: float = 0.3
+
+
+@dataclass
+class RepCounterConfig:
+    min_rep_duration_ms: int = 800
+
+
+@dataclass
+class OutputConfig:
+    annotated_video_codec: str = "mp4v"
+    json_indent: int = 2
+    draw_skeleton: bool = True
+    draw_angles: bool = True
+    draw_labels: bool = True
+
+
+@dataclass
+class PipelineConfig:
+    face: FaceIDConfig
+    pose: PoseConfig
+    exercise: ExerciseConfig
+    rep_counter: RepCounterConfig
+    output: OutputConfig
+
+
+def load_config(path: str = "config.yaml") -> PipelineConfig:
+    """Load YAML config file into typed PipelineConfig dataclass."""
+    raise NotImplementedError

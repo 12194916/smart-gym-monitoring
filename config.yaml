@@ -1,0 +1,29 @@
+face_id:
+  model_name: "buffalo_l"
+  gallery_path: "data/gallery.pkl"
+  enrollment_dir: "data/enrollment"
+  det_size: [640, 640]
+  similarity_threshold: 0.4
+  max_identification_frames: 60
+  providers: ["CUDAExecutionProvider", "CPUExecutionProvider"]
+
+pose:
+  model_path: "data/models/pose_landmarker_heavy.task"
+  min_detection_confidence: 0.5
+  min_tracking_confidence: 0.5
+
+exercise:
+  classifier_model_path: "data/models/exercise_classifier.pkl"
+  classification_interval_frames: 15
+  window_size: 30
+  min_classification_score: 0.3
+
+rep_counter:
+  min_rep_duration_ms: 800
+
+output:
+  annotated_video_codec: "mp4v"
+  json_indent: 2
+  draw_skeleton: true
+  draw_angles: true
+  draw_labels: true
