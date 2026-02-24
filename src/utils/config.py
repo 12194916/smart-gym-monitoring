@@ -1,5 +1,6 @@
 """YAML configuration loader with typed dataclasses."""
 
+import yaml
 from dataclasses import dataclass, field
 from typing import List, Tuple
 
@@ -13,6 +14,15 @@ class FaceIDConfig:
     similarity_threshold: float = 0.4
     max_identification_frames: int = 60
     providers: List[str] = field(default_factory=lambda: ["CUDAExecutionProvider", "CPUExecutionProvider"])
+
+
+@dataclass
+class PersonDetectionConfig:
+    model_path: str = "data/models/yolov8n.pt"
+    confidence_threshold: float = 0.5
+    center_weight: float = 0.4
+    size_weight: float = 0.6
+    bbox_padding: float = 0.15
 
 
 @dataclass
@@ -47,6 +57,7 @@ class OutputConfig:
 @dataclass
 class PipelineConfig:
     face: FaceIDConfig
+    person_detection: PersonDetectionConfig
     pose: PoseConfig
     exercise: ExerciseConfig
     rep_counter: RepCounterConfig
@@ -55,4 +66,14 @@ class PipelineConfig:
 
 def load_config(path: str = "config.yaml") -> PipelineConfig:
     """Load YAML config file into typed PipelineConfig dataclass."""
-    raise NotImplementedError
+    with open(path, "r") as f:
+        raw = yaml.safe_load(f)
+
+    return PipelineConfig(
+        face=FaceIDConfig(**raw.get("face_id", {})),
+        person_detection=PersonDetectionConfig(**raw.get("person_detection", {})),
+        pose=PoseConfig(**raw.get("pose", {})),
+        exercise=ExerciseConfig(**raw.get("exercise", {})),
+        rep_counter=RepCounterConfig(**raw.get("rep_counter", {})),
+        output=OutputConfig(**raw.get("output", {})),
+    )

@@ -4,7 +4,7 @@ Usage:
     python main.py <video_path>
 
 Modules are added step by step as they are developed:
-    Step 1: Exercise classification (pose + angles + classifier)
+    Step 1: Exercise classification
     Step 2: Rep counting
     Step 3: Face identification
     Step 4: Full pipeline with JSON output + annotated video
@@ -12,6 +12,9 @@ Modules are added step by step as they are developed:
 
 import argparse
 import sys
+import os
+
+from src.utils.config import load_config
 
 
 def main():
@@ -20,10 +23,14 @@ def main():
     parser.add_argument("--config", default="config.yaml")
     args = parser.parse_args()
 
-    # --- Step 1: Exercise Classification ---
-    # TODO: Implement after building pose estimator + angle computation + classifier
+    if not os.path.exists(args.video):
+        print(f"Error: Video file not found: {args.video}")
+        sys.exit(1)
+
+    config = load_config(args.config)
+
     print(f"Processing video: {args.video}")
-    print("Exercise classification not yet implemented.")
+    print("Pipeline modules not yet integrated. Use scripts/ for training.")
 
 
 if __name__ == "__main__":

@@ -7,6 +7,13 @@ face_id:
   max_identification_frames: 60
   providers: ["CUDAExecutionProvider", "CPUExecutionProvider"]
 
+person_detection:
+  model_path: "data/models/yolov8n.pt"
+  confidence_threshold: 0.5
+  center_weight: 0.4       # weight for "closest to center" score
+  size_weight: 0.6          # weight for "largest bounding box" score
+  bbox_padding: 0.15        # padding around detected person (fraction of bbox size)
+
 pose:
   model_path: "data/models/pose_landmarker_heavy.task"
   min_detection_confidence: 0.5
