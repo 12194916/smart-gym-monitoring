@@ -1,6 +1,30 @@
 """Per-exercise repetition detection rules and thresholds."""
 
 from src.exercise.definitions import Exercise
+from src.pose.angles import JointAngles
+
+
+def get_tracked_angle(angles: JointAngles, track_angle: str) -> float:
+    """Extract the tracked angle value from JointAngles based on the rule's track_angle key.
+
+    Args:
+        angles: Computed joint angles for a single frame.
+        track_angle: One of "avg_knee", "avg_elbow", "avg_hip", "min_knee".
+
+    Returns:
+        The angle value in degrees.
+    """
+    if track_angle == "avg_knee":
+        return (angles.left_knee + angles.right_knee) / 2.0
+    elif track_angle == "avg_elbow":
+        return (angles.left_elbow + angles.right_elbow) / 2.0
+    elif track_angle == "avg_hip":
+        return (angles.left_hip + angles.right_hip) / 2.0
+    elif track_angle == "min_knee":
+        return min(angles.left_knee, angles.right_knee)
+    else:
+        raise ValueError(f"Unknown track_angle: {track_angle}")
+
 
 REP_RULES = {
     Exercise.SQUAT: {
