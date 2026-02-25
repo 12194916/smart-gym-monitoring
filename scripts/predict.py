@@ -1,327 +1,218 @@
-"""Predict exercise class from a video file or live webcam.
+"""Live / video exercise prediction using raw landmark classifier.
+
+Runs the full pipeline: YOLO person detection → MediaPipe full-frame pose →
+raw landmark classifier → smoothed label overlay.
 
 Usage:
-    # From a video file:
-    python scripts/predict.py data/videos/test/squat/some_video.mp4
-
-    # Live webcam mode:
-    python scripts/predict.py --live
-    python scripts/predict.py --live --model data/models/exercise_classifier.pkl
+    python scripts/predict.py --source 0                    # webcam
+    python scripts/predict.py --source data/videos/test/squat/video1.mp4
+    python scripts/predict.py --source path/to/video.mp4 --no-yolo
 """
 
 import argparse
 import os
 import sys
-import time
-import pickle
-from collections import deque
+from collections import deque, Counter
 
 import cv2
+import joblib
 import numpy as np
 
 # Add project root to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.utils.config import load_config
-from src.utils.video_io import read_video_frames, get_video_metadata
-from src.pose.person_detector import PersonDetector
-from src.pose.estimator import PoseEstimator
-from src.pose.angles import compute_joint_angles
-from src.exercise.classifier import ExerciseClassifier
-from src.exercise.definitions import Exercise
-from src.rep_counter.counter import RepCounter
-from src.rep_counter.rep_rules import REP_RULES, get_tracked_angle
-from src.output.video_annotator import VideoAnnotator
+from src.pose.estimator import PoseEstimator, BODY_LANDMARK_INDICES
 
-ANGLE_NAMES = [
-    "left_knee", "right_knee",
-    "left_hip", "right_hip",
-    "left_elbow", "right_elbow",
-    "left_shoulder", "right_shoulder",
-    "torso_inclination",
+
+# Skeleton connections for drawing (pairs of landmark names)
+SKELETON_CONNECTIONS = [
+    ("left_shoulder", "right_shoulder"),
+    ("left_shoulder", "left_elbow"),
+    ("left_elbow", "left_wrist"),
+    ("right_shoulder", "right_elbow"),
+    ("right_elbow", "right_wrist"),
+    ("left_shoulder", "left_hip"),
+    ("right_shoulder", "right_hip"),
+    ("left_hip", "right_hip"),
+    ("left_hip", "left_knee"),
+    ("left_knee", "left_ankle"),
+    ("right_hip", "right_knee"),
+    ("right_knee", "right_ankle"),
 ]
 
 
-def run_video(args, config):
-    """Predict exercise from a pre-recorded video file (original behavior)."""
-    if not os.path.exists(args.video):
-        print(f"Error: Video not found: {args.video}")
+def draw_skeleton(frame, body_landmarks):
+    """Draw pose skeleton on the frame."""
+    if body_landmarks is None:
+        return
+
+    # Draw connections
+    for name_a, name_b in SKELETON_CONNECTIONS:
+        if name_a in body_landmarks and name_b in body_landmarks:
+            a = body_landmarks[name_a]
+            b = body_landmarks[name_b]
+            if a.visibility > 0.5 and b.visibility > 0.5:
+                pt_a = (int(a.x), int(a.y))
+                pt_b = (int(b.x), int(b.y))
+                cv2.line(frame, pt_a, pt_b, (0, 255, 0), 2)
+
+    # Draw keypoints
+    for name, lm in body_landmarks.items():
+        if lm.visibility > 0.5:
+            cv2.circle(frame, (int(lm.x), int(lm.y)), 4, (0, 0, 255), -1)
+
+
+def draw_label(frame, label, confidence):
+    """Draw exercise label and confidence on the frame."""
+    text = f"{label} ({confidence:.0%})"
+    font = cv2.FONT_HERSHEY_SIMPLEX
+
+    # Background rectangle
+    (tw, th), baseline = cv2.getTextSize(text, font, 1.0, 2)
+    cv2.rectangle(frame, (10, 10), (20 + tw, 20 + th + baseline), (0, 0, 0), -1)
+    cv2.putText(frame, text, (15, 15 + th), font, 1.0, (0, 255, 255), 2)
+
+
+def draw_bbox(frame, box):
+    """Draw YOLO person bounding box."""
+    cv2.rectangle(frame, (box.x1, box.y1), (box.x2, box.y2), (255, 200, 0), 2)
+    label = f"person {box.confidence:.0%}"
+    cv2.putText(frame, label, (box.x1, box.y1 - 8),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 200, 0), 1)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Live exercise prediction")
+    parser.add_argument("--source", default="0",
+                        help="Video file path or 0 for webcam")
+    parser.add_argument("--model", default=None,
+                        help="Path to classifier model (default: from config)")
+    parser.add_argument("--config", default="config.yaml")
+    parser.add_argument("--no-yolo", action="store_true",
+                        help="Skip YOLO person detection (just show pose + label)")
+    parser.add_argument("--stabilizer-window", type=int, default=None,
+                        help="Smoothing window size (default: from config)")
+    args = parser.parse_args()
+
+    config = load_config(args.config)
+
+    # Load classifier
+    model_path = args.model or config.exercise.classifier_model_path
+    if not os.path.exists(model_path):
+        print(f"Error: Model not found: {model_path}")
+        print("Run: python scripts/experiment.py")
         sys.exit(1)
 
-    if not os.path.exists(args.model):
-        print(f"Error: Model not found: {args.model}")
-        print("Run scripts/experiment.py first")
-        sys.exit(1)
+    print(f"Loading classifier: {model_path}")
+    model = joblib.load(model_path)
+    print(f"  Classes: {list(model.classes_)}")
 
-    # Load model
-    print("Loading model...")
-    with open(args.model, "rb") as f:
-        saved = pickle.load(f)
-    pipe = saved["pipeline"]
-    le = saved["label_encoder"]
-    feature_columns = saved["feature_columns"]
-
-    # Load config and init pose pipeline
-    meta = get_video_metadata(args.video)
-    print(f"Video: {meta['width']}x{meta['height']}, {meta['fps']:.1f} fps, "
-          f"{meta['total_frames']} frames, {meta['duration_seconds']:.1f}s")
-
-    print("Loading pose pipeline...")
-    detector = PersonDetector(
-        model_path=config.person_detection.model_path,
-        confidence_threshold=config.person_detection.confidence_threshold,
-        center_weight=config.person_detection.center_weight,
-        size_weight=config.person_detection.size_weight,
-    )
-    estimator = PoseEstimator(
+    # Init pose estimator
+    print(f"Loading pose model: {config.pose.model_path}")
+    pose = PoseEstimator(
         model_path=config.pose.model_path,
         min_detection_confidence=config.pose.min_detection_confidence,
         min_tracking_confidence=config.pose.min_tracking_confidence,
     )
 
-    # Extract angles
-    print("Processing frames...")
-    angles_list = []
-    for frame_idx, frame, timestamp_ms in read_video_frames(args.video):
-        person = detector.detect(frame)
-        if person is None:
-            continue
-        crop, cx, cy = detector.get_padded_crop(frame, person, padding=config.person_detection.bbox_padding)
-        landmarks = estimator.process(crop, offset_x=cx, offset_y=cy)
-        if landmarks is None:
-            continue
-        angles = compute_joint_angles(landmarks, timestamp_ms)
-        angles_list.append(angles)
+    # Init YOLO person detector (optional)
+    detector = None
+    if not args.no_yolo:
+        from src.pose.person_detector import PersonDetector
+        print(f"Loading YOLO: {config.person_detection.model_path}")
+        detector = PersonDetector(
+            model_path=config.person_detection.model_path,
+            confidence_threshold=config.person_detection.confidence_threshold,
+            center_weight=config.person_detection.center_weight,
+            size_weight=config.person_detection.size_weight,
+            iou_threshold=config.person_detection.iou_threshold,
+            max_missing_frames=config.person_detection.max_missing_frames,
+        )
 
-    estimator.close()
-
-    if not angles_list:
-        print("No poses detected in this video.")
-        sys.exit(1)
-
-    print(f"Poses extracted: {len(angles_list)}/{meta['total_frames']} frames")
-
-    # Aggregate features
-    features = {}
-    for name in ANGLE_NAMES:
-        values = [getattr(a, name) for a in angles_list]
-        arr = np.array(values)
-        features[f"{name}_mean"] = float(np.mean(arr))
-        features[f"{name}_std"] = float(np.std(arr))
-        features[f"{name}_min"] = float(np.min(arr))
-        features[f"{name}_max"] = float(np.max(arr))
-    features["num_frames"] = len(angles_list)
-
-    # Predict
-    feature_values = [features[col] for col in feature_columns]
-    X = np.array([feature_values])
-
-    pred_idx = pipe.predict(X)[0]
-    pred_label = le.inverse_transform([pred_idx])[0]
-
-    # Confidence (probability per class)
-    if hasattr(pipe, "predict_proba"):
-        proba = pipe.predict_proba(X)[0]
-        top_3 = sorted(zip(le.classes_, proba), key=lambda x: x[1], reverse=True)[:3]
-
-        print(f"\n{'=' * 40}")
-        print(f"  PREDICTION: {pred_label}")
-        print(f"{'=' * 40}")
-        print(f"\n  Top 3:")
-        for label, prob in top_3:
-            bar = "#" * int(prob * 30)
-            print(f"    {label:<25} {prob:>5.1%} {bar}")
-    else:
-        print(f"\n{'=' * 40}")
-        print(f"  PREDICTION: {pred_label}")
-        print(f"{'=' * 40}")
-
-
-def run_live(config, model_path: str):
-    """Run real-time exercise monitoring from webcam."""
-    print("Initializing live mode...")
-
-    # Initialize pose pipeline
-    print("Loading pose pipeline...")
-    detector = PersonDetector(
-        model_path=config.person_detection.model_path,
-        confidence_threshold=config.person_detection.confidence_threshold,
-        center_weight=config.person_detection.center_weight,
-        size_weight=config.person_detection.size_weight,
-    )
-    estimator = PoseEstimator(
-        model_path=config.pose.model_path,
-        min_detection_confidence=config.pose.min_detection_confidence,
-        min_tracking_confidence=config.pose.min_tracking_confidence,
-    )
-
-    # Initialize classifier, rep counter, annotator
-    print("Loading exercise classifier...")
-    classifier = ExerciseClassifier(
-        model_path=model_path,
-        window_size=config.exercise.window_size,
-    )
-    rep_counter = RepCounter()
-    annotator = VideoAnnotator(
-        draw_skeleton=config.output.draw_skeleton,
-        draw_angles=config.output.draw_angles,
-        draw_labels=config.output.draw_labels,
-    )
-
-    # Open webcam
-    cap = cv2.VideoCapture(0)
+    # Open video source
+    source = int(args.source) if args.source.isdigit() else args.source
+    cap = cv2.VideoCapture(source)
     if not cap.isOpened():
-        print("Error: Could not open webcam")
+        print(f"Error: Cannot open source: {args.source}")
         sys.exit(1)
 
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    is_webcam = isinstance(source, int)
+    print(f"Source: {args.source} ({'webcam' if is_webcam else f'{total_frames} frames, {fps:.0f} fps'})")
 
-    actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    print(f"Camera resolution: {actual_w}x{actual_h}")
-    print()
-    print("Controls:")
-    print("  q - Quit")
-    print("  r - Reset rep count and classifier buffer")
-    print()
+    # Smoothing: simple majority vote over recent predictions
+    window_size = args.stabilizer_window or config.exercise.stabilizer_window
+    history = deque(maxlen=window_size)
+    stable_label = "..."
+    stable_confidence = 0.0
 
-    frame_idx = 0
-    interval = config.exercise.classification_interval_frames
-    min_score = config.exercise.min_classification_score
-
-    # Cached results for display
-    last_landmarks = None
-    last_exercise = Exercise.UNKNOWN
-    last_confidence = 0.0
-    last_tracked_value = None
-    last_tracked_name = None
-
-    # FPS tracking
-    fps = 0.0
-    frame_times = deque(maxlen=30)
-    start_ms = int(time.time() * 1000)
+    frame_count = 0
+    print("\nPress 'q' to quit, 'r' to reset stabilizer\n")
 
     while True:
         ret, frame = cap.read()
         if not ret:
+            if is_webcam:
+                continue
             break
 
-        # Mirror for natural interaction
-        frame = cv2.flip(frame, 1)
-        timestamp_ms = int(time.time() * 1000) - start_ms
+        frame_count += 1
 
-        # FPS calculation
-        now = time.time()
-        frame_times.append(now)
-        if len(frame_times) > 1:
-            elapsed = frame_times[-1] - frame_times[0]
-            if elapsed > 0:
-                fps = (len(frame_times) - 1) / elapsed
+        # YOLO person detection (for box overlay only)
+        person_box = None
+        if detector is not None:
+            person_box = detector.detect(frame)
 
-        # --- POSE DETECTION (every frame) ---
-        person = detector.detect(frame)
-        if person is not None:
-            crop, cx, cy = detector.get_padded_crop(
-                frame, person, padding=config.person_detection.bbox_padding
-            )
-            landmarks = estimator.process(crop, offset_x=cx, offset_y=cy)
-            if landmarks is not None:
-                last_landmarks = landmarks
-                angles = compute_joint_angles(landmarks, timestamp_ms)
+        # Full-frame pose estimation (matches training — no crop)
+        raw_landmarks, body_landmarks = pose.process_full_frame(frame)
 
-                # Add angles to classifier buffer EVERY frame
-                classifier.update(angles)
+        if raw_landmarks is not None:
+            # Classify
+            X = np.array(raw_landmarks).reshape(1, -1)
+            pred = model.predict(X)[0]
+            proba = model.predict_proba(X).max()
 
-                # --- CLASSIFICATION (every Nth frame) ---
-                if frame_idx % interval == 0:
-                    exercise, confidence = classifier.classify()
-                    if confidence >= min_score:
-                        last_exercise = exercise
-                        last_confidence = confidence
+            history.append((pred, proba))
 
-                # --- REP COUNTING (every frame) ---
-                if last_exercise != Exercise.UNKNOWN:
-                    rep_counter.update(last_exercise, angles, timestamp_ms)
+            # Majority vote for stable label
+            votes = Counter(p for p, _ in history)
+            winner, count = votes.most_common(1)[0]
+            winner_conf = max(c for p, c in history if p == winner)
 
-                    # Get tracked angle for display
-                    if last_exercise in REP_RULES:
-                        rule = REP_RULES[last_exercise]
-                        last_tracked_value = get_tracked_angle(angles, rule["track_angle"])
-                        last_tracked_name = rule["track_angle"]
-            else:
-                last_landmarks = None
-        else:
-            last_landmarks = None
+            if count > len(history) / 2:
+                stable_label = winner
+                stable_confidence = winner_conf
 
-        # --- ANNOTATE & DISPLAY (every frame) ---
-        annotated = annotator.draw(
-            frame,
-            landmarks=last_landmarks,
-            exercise=last_exercise.value if last_exercise else "unknown",
-            rep_count=rep_counter.count,
-            confidence=last_confidence,
-            tracked_angle_value=last_tracked_value,
-            tracked_angle_name=last_tracked_name,
-            fps=fps,
-        )
+        # Draw
+        if body_landmarks is not None:
+            draw_skeleton(frame, body_landmarks)
+        if person_box is not None:
+            draw_bbox(frame, person_box)
+        draw_label(frame, stable_label, stable_confidence)
 
-        cv2.imshow("Gym Monitor - Live", annotated)
+        # FPS counter
+        cv2.putText(frame, f"Frame {frame_count}", (10, frame.shape[0] - 15),
+                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
 
-        # Key handling
-        key = cv2.waitKey(1) & 0xFF
+        cv2.imshow("Exercise Prediction", frame)
+
+        key = cv2.waitKey(1 if is_webcam else int(1000 / fps)) & 0xFF
         if key == ord('q'):
             break
         elif key == ord('r'):
-            rep_counter.reset(last_exercise)
-            classifier.reset()
-            last_exercise = Exercise.UNKNOWN
-            last_confidence = 0.0
-            last_tracked_value = None
-            last_tracked_name = None
-            print("Reset: rep count and classifier buffer cleared")
+            history.clear()
+            stable_label = "..."
+            stable_confidence = 0.0
+            if detector is not None:
+                detector.reset_tracking()
+            print("Reset stabilizer")
 
-        frame_idx += 1
-
-    # Cleanup
     cap.release()
     cv2.destroyAllWindows()
-    estimator.close()
-
-    # Session summary
-    print(f"\nSession summary:")
-    print(f"  Frames processed: {frame_idx}")
-    print(f"  Last exercise: {last_exercise.value}")
-    print(f"  Total reps: {rep_counter.count}")
-    if rep_counter.reps:
-        print(f"  Rep details:")
-        for rep in rep_counter.reps:
-            print(f"    Rep {rep.rep_number}: {rep.duration_ms}ms "
-                  f"({rep.start_ms/1000:.1f}s - {rep.end_ms/1000:.1f}s)")
-
-
-def main():
-    parser = argparse.ArgumentParser(description="Predict exercise from video or live webcam")
-    parser.add_argument("video", nargs="?", default=None, help="Path to video file")
-    parser.add_argument("--live", action="store_true", help="Use webcam for live monitoring")
-    parser.add_argument("--model", default="data/models/exercise_classifier.pkl")
-    parser.add_argument("--config", default="config.yaml")
-    args = parser.parse_args()
-
-    if not args.live and args.video is None:
-        parser.error("Provide a video path or use --live for webcam mode")
-
-    if not os.path.exists(args.model):
-        print(f"Error: Model not found: {args.model}")
-        print("Run scripts/experiment.py first to train a model")
-        sys.exit(1)
-
-    config = load_config(args.config)
-
-    if args.live:
-        run_live(config, args.model)
-    else:
-        run_video(args, config)
+    pose.close()
+    print(f"\nProcessed {frame_count} frames")
 
 
 if __name__ == "__main__":

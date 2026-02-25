@@ -1,26 +1,39 @@
 # Smart Gym Monitoring
 
-A computer vision pipeline that analyzes workout videos and live webcam feeds to classify exercises and count repetitions using pose estimation.
-
-Built for internal demonstration and board review. Under active development — feature extraction is ongoing and the model will be retrained as more exercise classes are processed.
+A computer vision pipeline for real-time exercise classification from video and webcam feeds using pose estimation and machine learning.
 
 ## How It Works
 
-The core idea: **detect what exercise is being performed, then apply exercise-specific rep counting logic**. Different exercises have different movement patterns — a squat tracks knee angle, a bicep curl tracks elbow angle, a deadlift tracks hip angle. The ML classifier identifies the exercise first, then the rep counter uses the correct angle and thresholds for that specific exercise to count reps accurately.
-
-## Pipeline
-
 ```
-Video/Webcam → YOLOv8 Person Detection → MediaPipe Pose (12 landmarks)
-    → 9 Joint Angles → ML Classifier (ExtraTrees) → Rep Counter (state machine)
-    → Annotated Output (skeleton + HUD overlay)
+Video/Webcam → YOLOv8 Person Detection → MediaPipe Pose (33 landmarks)
+    → 132 Raw Landmark Features → ML Classifier (ExtraTrees) → Stabilized Label
+    → Annotated Output (skeleton + exercise label overlay)
 ```
 
-**Pose pipeline**: YOLOv8 nano detects the person (scored by bbox size + center proximity), MediaPipe PoseLandmarker extracts 12 body landmarks, then 9 joint angles are computed (knees, hips, elbows, shoulders, torso inclination).
+1. **Person detection**: YOLOv8 nano finds the person in frame, scored by bounding box size + center proximity with IoU-based tracking across frames.
+2. **Pose estimation**: MediaPipe PoseLandmarker Heavy extracts all 33 pose landmarks in normalized coordinates.
+3. **Exercise classification**: The 132 raw features (33 landmarks x 4 values: x, y, z, visibility) are fed directly to a trained ExtraTrees classifier. A majority-vote stabilizer smooths predictions over a sliding window to prevent label flickering.
+4. **Rep counting**: *(planned)* State machine tracking per-exercise joint angles for repetition counting.
 
-**Exercise classification**: A sliding window of the last 30 frames computes mean/std/min/max of all 9 angles (37 features total), fed to a trained ExtraTrees classifier. Currently ~85% cross-validation accuracy on 15 exercise classes (trained on partial data — will improve as remaining classes are extracted).
+## Model Performance
 
-**Rep counting**: Two-state machine (EXTENDED ↔ CONTRACTED) tracks the primary angle per exercise with configurable thresholds and minimum duration debounce.
+Trained on the [Kaggle Gym Workout/Exercises Video Dataset](https://www.kaggle.com/datasets/philosopher0808/gym-workoutexercises-video) with 15-frame sampling per video and per-class balancing (max 2,000 samples/class).
+
+| Model | 5-Fold CV Accuracy | Holdout Accuracy (80/20 split) |
+|---|---|---|
+| ExtraTrees_300 | **96.1%** | **96.9%** |
+| RandomForest_300 | 95.5% | — |
+| RandomForest_500 | 95.5% | — |
+
+Best model: **ExtraTrees** (300 trees, max_depth=25, balanced class weights). Saved as `data/models/exercise_classifier.pkl`.
+
+## Supported Exercises (22 classes)
+
+barbell biceps curl, bench press, chest fly machine, deadlift, decline bench press, hammer curl, hip thrust, incline bench press, lat pulldown, lateral raise, leg extension, leg raises, plank, pull up, push-up, romanian deadlift, russian twist, shoulder press, squat, t bar row, tricep pushdown, tricep dips
+
+## Known Issues
+
+- **Frame-level label switching**: The classifier predicts independently per frame. During an exercise, certain body positions can momentarily resemble a different exercise class, causing the label to briefly switch. The stabilizer window helps but does not fully eliminate this. A planned fix is to accumulate predictions over a fixed number of frames and commit to a label only after sufficient agreement, rather than updating every frame.
 
 ## Project Structure
 
@@ -31,42 +44,49 @@ gym-monitoring/
 ├── requirements.txt
 │
 ├── scripts/
-│   ├── extract_pose_features.py      # Extract angle features from training videos
-│   ├── experiment.py                 # Train & compare 6 classifiers (5-fold CV)
+│   ├── extract_pose_features.py      # Extract 132 raw landmark features from training videos
+│   ├── experiment.py                 # Train & compare classifiers (5-fold CV + holdout)
 │   ├── evaluate.py                   # Evaluate model on unseen test videos
-│   └── predict.py                    # Predict from video file or --live webcam
+│   └── predict.py                    # Live prediction from video file or webcam
 │
 ├── src/
 │   ├── pose/
-│   │   ├── person_detector.py        # YOLOv8 person detection (MPS GPU support)
-│   │   ├── estimator.py              # MediaPipe PoseLandmarker wrapper
-│   │   └── angles.py                 # 9 joint angle computation
+│   │   ├── person_detector.py        # YOLOv8 person detection with IoU tracking
+│   │   ├── estimator.py              # MediaPipe PoseLandmarker (33 landmarks + 12 body)
+│   │   └── angles.py                 # Joint angle computation (used by rep counter)
 │   ├── exercise/
-│   │   ├── definitions.py            # Exercise enum (8 exercises + UNKNOWN)
-│   │   └── classifier.py             # Sliding window ML classifier
+│   │   ├── definitions.py            # Exercise enum (15 exercises + UNKNOWN)
+│   │   ├── classifier.py             # Raw landmark classifier wrapper
+│   │   └── stabilizer.py             # Majority-vote label smoothing
 │   ├── rep_counter/
-│   │   ├── counter.py                # State machine rep counter
-│   │   └── rep_rules.py              # Per-exercise angle thresholds
+│   │   ├── counter.py                # State machine rep counter (planned)
+│   │   └── rep_rules.py              # Per-exercise angle thresholds (planned)
 │   ├── output/
-│   │   └── video_annotator.py        # Skeleton + HUD overlay drawing
+│   │   ├── video_annotator.py        # Skeleton + HUD overlay drawing
+│   │   └── json_writer.py            # JSON output
 │   └── utils/
 │       ├── geometry.py               # Vector math, angle calculation
 │       ├── video_io.py               # OpenCV video read/write helpers
-│       └── config.py                 # YAML → typed dataclass config
+│       └── config.py                 # YAML → typed dataclass config loader
 │
 ├── notebooks/
-│   └── analysis.ipynb                # Feature exploration & visualization
+│   ├── analysis.ipynb                # Feature exploration & visualization
+│   └── pose-model-final-2.ipynb      # Kaggle notebook (reference model)
 │
 ├── data/
 │   ├── videos/                       # Training + test videos (not in git)
+│   │   ├── data_btc_10s/            # Rep-aligned clips (~22 classes)
+│   │   ├── data_crawl_10s/          # Sliding window clips
+│   │   ├── raw_btc/                 # Raw clips (additional data)
+│   │   ├── raw_crawl/               # Raw clips (additional data)
+│   │   └── test/                    # Unseen test videos
 │   ├── models/                       # Model files (not in git)
-│   │   ├── yolov8n.pt               # YOLOv8 nano person detector
-│   │   ├── pose_landmarker_heavy.task # MediaPipe pose model
-│   │   └── exercise_classifier.pkl   # Trained sklearn pipeline
-│   ├── features.csv                  # Extracted features (not in git)
-│   └── enrollment/                   # Face enrollment photos (future)
+│   │   ├── yolov8n.pt              # YOLOv8 nano person detector
+│   │   ├── pose_landmarker_heavy.task # MediaPipe pose model (heavy variant)
+│   │   └── exercise_classifier.pkl  # Trained ExtraTrees classifier
+│   └── landmarks.csv                # Extracted landmark features (not in git)
 │
-└── outputs/                          # Generated results
+└── tests/
 ```
 
 ## Setup
@@ -85,20 +105,21 @@ Download model files into `data/models/`:
 
 Source: [Kaggle Gym Workout/Exercises Video Dataset](https://www.kaggle.com/datasets/philosopher0808/gym-workoutexercises-video)
 
-- ~1,600 video clips, 22 exercise categories
+- ~1,600 video clips across 22 exercise categories
 - Pre-processed clips (10-13 seconds), MP4 format
-- Two subsets: `data_btc_10s` (rep-aligned) and `data_crawl_10s` (sliding window)
+- Four training directories: `data_btc_10s`, `data_crawl_10s`, `raw_btc`, `raw_crawl`
+- 15 frames sampled per video at fixed proportions (10%, 15%, 20%, ..., 95% of total frames)
 
 ## Usage
 
 ### Train a model
 
 ```bash
-# 1. Extract pose features from all training videos
-python scripts/extract_pose_features.py --all --output data/features.csv
+# 1. Extract raw landmark features from all training videos
+python scripts/extract_pose_features.py --all --output data/landmarks.csv
 
 # 2. Train classifiers and save best model
-python scripts/experiment.py --features data/features.csv
+python scripts/experiment.py --features data/landmarks.csv
 
 # 3. Evaluate on unseen test videos
 python scripts/evaluate.py --test-dir data/videos/test
@@ -108,51 +129,38 @@ python scripts/evaluate.py --test-dir data/videos/test
 
 ```bash
 # From a video file
-python scripts/predict.py data/videos/test/deadlift/deadlift_1.mp4
+python scripts/predict.py --source "data/videos/test/deadlift/deadlift_1.mp4"
 
-# Live webcam mode (real-time classification + rep counting)
-python scripts/predict.py --live
+# Live webcam
+python scripts/predict.py --source 0
+
+# Without YOLO bounding box (pose + classification only)
+python scripts/predict.py --source 0 --no-yolo
 ```
 
-Live mode controls:
+Controls:
 - `q` — quit
-- `r` — reset rep count and classifier buffer
+- `r` — reset stabilizer and tracking
 
-### Test a single video through the pose pipeline
+### Test extraction on a single video
 
 ```bash
-python scripts/extract_pose_features.py --video data/videos/data_btc_10s/squat/some_video.mp4
+python scripts/extract_pose_features.py --video "data/videos/data_btc_10s/squat/some_video.mp4"
 ```
-
-## Supported Exercises
-
-The goal is to first detect **which** exercise is happening, then apply the correct counting logic. Each exercise has its own tracked angle and thresholds:
-
-| Exercise | Tracked Angle | Extended | Contracted | Min Rep Duration |
-|----------|--------------|----------|------------|-----------------|
-| Squat | avg knee | >160° | <100° | 800ms |
-| Bicep Curl | avg elbow | >150° | <60° | 600ms |
-| Push-up | avg elbow | >155° | <80° | 700ms |
-| Deadlift | avg hip | >165° | <100° | 1000ms |
-| Shoulder Press | avg elbow | >160° | <80° | 700ms |
-| Lunge | min knee | >155° | <95° | 900ms |
-| Pull-up | avg elbow | >160° | <70° | 800ms |
-| Bench Press | avg elbow | >160° | <75° | 800ms |
-
-The trained model currently recognizes 15 classes from the Kaggle dataset (partial extraction — more classes being added). Model labels are mapped to the above exercise categories for rep counting. Exercises without a mapping (e.g. plank, leg raises) are classified but don't have rep counting.
 
 ## Configuration
 
-All thresholds, model paths, and parameters are in `config.yaml`. Key settings:
+All thresholds, model paths, and parameters are in `config.yaml`:
 
 | Setting | Default | Description |
-|---------|---------|-------------|
-| `exercise.window_size` | 30 | Sliding window frames for classification |
-| `exercise.classification_interval_frames` | 15 | Classify every N frames in live mode |
-| `exercise.min_classification_score` | 0.3 | Minimum confidence to accept prediction |
+|---|---|---|
+| `pose.model_path` | `pose_landmarker_heavy.task` | MediaPipe pose model variant |
+| `exercise.stabilizer_window` | 5 | Majority voting window to smooth predictions |
+| `exercise.classifier_model_path` | `exercise_classifier.pkl` | Trained sklearn classifier |
 | `person_detection.confidence_threshold` | 0.5 | YOLO detection threshold |
-| `rep_counter.min_rep_duration_ms` | 800 | Global minimum rep duration |
+| `person_detection.iou_threshold` | 0.3 | IoU threshold for person tracking |
+| `person_detection.max_missing_frames` | 5 | Frames before tracking resets |
 
 ## Hardware
 
-Tested on Apple M4 Pro (24GB). YOLOv8 uses MPS (Metal) GPU acceleration when available, falls back to CPU otherwise.
+Tested on Apple M4 Pro (24GB). YOLOv8 uses MPS (Metal) GPU acceleration when available, falls back to CPU.

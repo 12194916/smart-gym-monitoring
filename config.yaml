@@ -13,6 +13,8 @@ person_detection:
   center_weight: 0.4       # weight for "closest to center" score
   size_weight: 0.6          # weight for "largest bounding box" score
   bbox_padding: 0.15        # padding around detected person (fraction of bbox size)
+  iou_threshold: 0.3        # IoU threshold for tracking same person across frames
+  max_missing_frames: 5     # frames before tracking resets when person lost
 
 pose:
   model_path: "data/models/pose_landmarker_heavy.task"
@@ -24,6 +26,7 @@ exercise:
   classification_interval_frames: 15
   window_size: 30
   min_classification_score: 0.3
+  stabilizer_window: 5       # majority voting window to prevent label flickering
 
 rep_counter:
   min_rep_duration_ms: 800

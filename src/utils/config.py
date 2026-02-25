@@ -23,6 +23,8 @@ class PersonDetectionConfig:
     center_weight: float = 0.4
     size_weight: float = 0.6
     bbox_padding: float = 0.15
+    iou_threshold: float = 0.3
+    max_missing_frames: int = 5
 
 
 @dataclass
@@ -38,6 +40,7 @@ class ExerciseConfig:
     classification_interval_frames: int = 15
     window_size: int = 30
     min_classification_score: float = 0.3
+    stabilizer_window: int = 5
 
 
 @dataclass

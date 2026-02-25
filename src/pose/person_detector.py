@@ -35,11 +35,18 @@ class PersonDetector:
 
     def __init__(self, model_path: str, confidence_threshold: float = 0.5,
                  center_weight: float = 0.4, size_weight: float = 0.6,
+                 iou_threshold: float = 0.3, max_missing_frames: int = 5,
                  device: str = "auto"):
         self.model = YOLO(model_path)
         self.confidence_threshold = confidence_threshold
         self.center_weight = center_weight
         self.size_weight = size_weight
+        self.iou_threshold = iou_threshold
+        self.max_missing_frames = max_missing_frames
+
+        # Tracking state
+        self._prev_box: Optional[PersonBox] = None
+        self._frames_without_match: int = 0
 
         # Select best available device: MPS (Apple Silicon GPU) > CPU
         if device == "auto":
@@ -52,7 +59,12 @@ class PersonDetector:
         print(f"  PersonDetector using device: {self.device}")
 
     def detect(self, frame: np.ndarray) -> Optional[PersonBox]:
-        """Detect people in frame and return the best candidate, or None."""
+        """Detect people in frame and return the best candidate, or None.
+
+        Uses IoU-based tracking to prefer the same person across frames.
+        Falls back to size+center scoring when no previous detection exists
+        or tracking is lost.
+        """
         h, w = frame.shape[:2]
         frame_center_x = w / 2
         frame_center_y = h / 2
@@ -64,12 +76,19 @@ class PersonDetector:
         persons = self._extract_persons(results, frame_area, frame_center_x, frame_center_y)
 
         if not persons:
+            self._frames_without_match += 1
+            if self._frames_without_match > self.max_missing_frames:
+                self._prev_box = None
             return None
 
-        if len(persons) == 1:
-            return persons[0]
+        if len(persons) == 1 and self._prev_box is None:
+            selected = persons[0]
+        else:
+            selected = self._select_best_with_tracking(persons, w, h)
 
-        return self._select_best(persons, w, h, frame_area)
+        self._prev_box = selected
+        self._frames_without_match = 0
+        return selected
 
     def _extract_persons(self, results, frame_area: float,
                          frame_center_x: float, frame_center_y: float) -> List[PersonBox]:
@@ -95,14 +114,20 @@ class PersonDetector:
                 ))
         return persons
 
-    def _select_best(self, persons: List[PersonBox], w: int, h: int,
-                     frame_area: float) -> PersonBox:
-        """Score each person and return the best one.
+    def _select_best_with_tracking(self, persons: List[PersonBox],
+                                   w: int, h: int) -> PersonBox:
+        """Score each person using center proximity, size, and IoU tracking.
 
-        Score = size_weight * (area / max_area) + center_weight * (1 - dist / max_dist)
+        When tracking a person (prev_box exists), IoU continuity is added
+        to the score so the same person is preferred across frames. Center
+        and size are always factored in so a small/edge person doesn't get
+        locked onto permanently.
+
+        Score = size_weight * size + center_weight * center + iou_bonus
+        where iou_bonus = 0.5 * iou (only when tracking)
         """
         max_area = max(p.area for p in persons)
-        max_dist = np.sqrt((w / 2) ** 2 + (h / 2) ** 2)  # corner to center distance
+        max_dist = np.sqrt((w / 2) ** 2 + (h / 2) ** 2)
 
         best = None
         best_score = -1.0
@@ -111,13 +136,36 @@ class PersonDetector:
             size_score = p.area / max_area if max_area > 0 else 0
             dist = np.sqrt((p.center_x - w / 2) ** 2 + (p.center_y - h / 2) ** 2)
             center_score = 1.0 - (dist / max_dist) if max_dist > 0 else 1.0
+
             score = self.size_weight * size_score + self.center_weight * center_score
+
+            # Add IoU tracking bonus when we have a previous detection
+            if self._prev_box is not None:
+                iou = self._compute_iou(self._prev_box, p)
+                if iou >= self.iou_threshold:
+                    score += 0.5 * iou
 
             if score > best_score:
                 best_score = score
                 best = p
 
         return best
+
+    @staticmethod
+    def _compute_iou(a: PersonBox, b: PersonBox) -> float:
+        """Compute Intersection over Union between two bounding boxes."""
+        inter_x1 = max(a.x1, b.x1)
+        inter_y1 = max(a.y1, b.y1)
+        inter_x2 = min(a.x2, b.x2)
+        inter_y2 = min(a.y2, b.y2)
+        inter_area = max(0, inter_x2 - inter_x1) * max(0, inter_y2 - inter_y1)
+        union_area = a.area + b.area - inter_area
+        return inter_area / union_area if union_area > 0 else 0.0
+
+    def reset_tracking(self):
+        """Clear tracking state. Call when resetting the session."""
+        self._prev_box = None
+        self._frames_without_match = 0
 
     def get_padded_crop(self, frame: np.ndarray, box: PersonBox,
                         padding: float = 0.15) -> tuple:

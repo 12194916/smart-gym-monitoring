@@ -104,6 +104,39 @@ class PoseEstimator:
 
         return landmarks
 
+    def process_full_frame(self, frame: np.ndarray):
+        """Process a full frame and return all 33 raw normalized landmarks.
+
+        Returns a list of 33 (x, y, z, visibility) tuples in MediaPipe's
+        normalized [0,1] coordinate space, or None if no pose detected.
+        Also returns the 12 body landmarks dict for angle computation.
+        """
+        h, w = frame.shape[:2]
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+
+        result = self.landmarker.detect(mp_image)
+
+        if not result.pose_landmarks or len(result.pose_landmarks) == 0:
+            return None, None
+
+        pose = result.pose_landmarks[0]
+
+        # All 33 raw normalized landmarks for classification
+        raw_landmarks = []
+        for lm in pose:
+            raw_landmarks.extend([lm.x, lm.y, lm.z, lm.visibility if lm.visibility else 0.0])
+
+        # 12 body landmarks in pixel coords for angles and skeleton
+        body_landmarks = {}
+        for idx, name in BODY_LANDMARK_INDICES.items():
+            lm = pose[idx]
+            body_landmarks[name] = LandmarkPoint(
+                x=lm.x * w, y=lm.y * h, z=lm.z, visibility=lm.visibility,
+            )
+
+        return raw_landmarks, body_landmarks
+
     def close(self):
         """Release resources."""
         self.landmarker.close()
