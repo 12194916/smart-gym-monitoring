@@ -20,16 +20,23 @@ pose:
   model_path: "data/models/pose_landmarker_heavy.task"
   min_detection_confidence: 0.5
   min_tracking_confidence: 0.5
+  max_poses: 3                          # detect up to N poses, select best by size + center
+  person_size_weight: 0.6               # prefer larger body (0-1)
+  person_center_weight: 0.4             # prefer closer to frame center (0-1)
 
 exercise:
   classifier_model_path: "data/models/exercise_classifier.pkl"
   classification_interval_frames: 15
   window_size: 30
   min_classification_score: 0.3
-  stabilizer_window: 5       # majority voting window to prevent label flickering
+  stabilizer_window: 5                  # legacy (unused), kept for reference
+  stabilizer_ema_alpha: 0.15            # EMA smoothing factor (lower = smoother, higher = responsive)
+  stabilizer_hysteresis_margin: 0.15    # challenger must exceed current label EMA by this margin
+  stabilizer_min_hold_frames: 15        # minimum frames to hold a label before allowing switch
 
 rep_counter:
-  min_rep_duration_ms: 800
+  min_rep_duration_ms: 800              # minimum time for one full rep (prevents double-counting)
+  angle_smoothing_window: 5             # moving average window for angle smoothing
 
 output:
   annotated_video_codec: "mp4v"

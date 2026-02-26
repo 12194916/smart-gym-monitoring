@@ -1,7 +1,8 @@
 """Evaluate trained landmark classifier on test videos.
 
-Extracts landmarks from test videos (same 15-frame sampling as training),
-predicts per-frame, then majority-votes for a per-video label.
+Processes every frame of the first video per class through the same pipeline
+as predict.py: per-frame predict_proba → EMA stabilizer → final label.
+Reports both strict accuracy and family accuracy.
 
 Usage:
     python scripts/evaluate.py
@@ -12,7 +13,6 @@ Usage:
 import argparse
 import os
 import sys
-from collections import Counter
 
 import cv2
 import joblib
@@ -28,16 +28,28 @@ from mediapipe.tasks.python.vision import (
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.utils.config import load_config
+from src.exercise.stabilizer import ClassificationStabilizer
 
-# Same sampling fractions as training extraction and notebook
-SAMPLE_FRACTIONS = [
-    0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45,
-    0.5, 0.55, 0.6, 0.7, 0.8, 0.9, 0.95,
-]
+
+# Exercise families: predictions within the same family count as correct
+EXERCISE_FAMILIES = {
+    "bench press":         "bench press",
+    "decline bench press": "bench press",
+    "incline bench press": "bench press",
+    "deadlift":            "deadlift",
+    "romanian deadlift":   "deadlift",
+    "barbell biceps curl": "curl",
+    "hammer curl":         "curl",
+}
+
+
+def get_family(label: str) -> str:
+    """Return exercise family, or the label itself if it has no family."""
+    return EXERCISE_FAMILIES.get(label, label)
 
 
 def normalize_label(label: str) -> str:
-    """Normalize label to match training convention."""
+    """Normalize folder name to match model class names."""
     label = label.lower().replace('-', ' ').replace('_', ' ').strip()
     corrections = {
         'lateral raise': 'lateral raises',
@@ -45,71 +57,84 @@ def normalize_label(label: str) -> str:
     return corrections.get(label, label)
 
 
-def extract_landmarks_from_video(video_path: str, detector: PoseLandmarker) -> list:
-    """Extract raw landmarks from sampled frames (matching training extraction)."""
-    cap = cv2.VideoCapture(video_path)
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-
-    if total_frames <= 0:
-        cap.release()
-        return []
-
-    if total_frames > 15:
-        sample_indices = [int(total_frames * p) for p in SAMPLE_FRACTIONS]
-    else:
-        sample_indices = list(range(0, total_frames, 2))
-
-    rows = []
-    for frame_idx in sample_indices:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-        ret, frame = cap.read()
-        if not ret:
-            continue
-
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
-        result = detector.detect(mp_image)
-
-        if result.pose_landmarks:
-            row = []
-            for lm in result.pose_landmarks[0]:
-                row.extend([lm.x, lm.y, lm.z, lm.visibility if lm.visibility else 0.0])
-            rows.append(row)
-
-    cap.release()
-    return rows
-
-
 def collect_test_videos(test_dir: str) -> list:
-    """Collect (video_path, label) tuples from test directory."""
+    """Collect first video per class from test directory.
+
+    Returns list of (video_path, raw_folder_name) tuples.
+    """
     videos = []
     for exercise_name in sorted(os.listdir(test_dir)):
         exercise_dir = os.path.join(test_dir, exercise_name)
         if not os.path.isdir(exercise_dir):
             continue
+        # Take only the first video (sorted) from each class folder
         for fname in sorted(os.listdir(exercise_dir)):
             if fname.endswith(('.mp4', '.avi', '.mov', '.mkv')):
                 videos.append((os.path.join(exercise_dir, fname), exercise_name))
+                break
     return videos
 
 
-def predict_video(model, landmarks: list) -> tuple:
-    """Predict exercise for a video using per-frame prediction + majority vote.
+def predict_video_with_stabilizer(
+    video_path: str,
+    model,
+    detector: PoseLandmarker,
+    stabilizer_config,
+) -> tuple:
+    """Predict exercise by running every frame through the EMA stabilizer.
 
-    Returns (predicted_label, confidence, per_frame_predictions).
+    Same pipeline as predict.py: extract pose → predict_proba → stabilizer.
+    Returns (predicted_label, confidence, n_frames_processed).
     """
-    if not landmarks:
-        return "unknown", 0.0, []
+    cap = cv2.VideoCapture(video_path)
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    X = np.array(landmarks)
-    frame_predictions = model.predict(X)
+    if total_frames <= 0:
+        cap.release()
+        return "unknown", 0.0, 0
 
-    # Majority vote
-    vote_counts = Counter(frame_predictions)
-    predicted_label = vote_counts.most_common(1)[0][0]
-    confidence = vote_counts[predicted_label] / len(frame_predictions)
+    stabilizer = ClassificationStabilizer(
+        ema_alpha=stabilizer_config.stabilizer_ema_alpha,
+        hysteresis_margin=stabilizer_config.stabilizer_hysteresis_margin,
+        min_hold_frames=stabilizer_config.stabilizer_min_hold_frames,
+        min_confidence=stabilizer_config.min_classification_score,
+    )
 
-    return predicted_label, confidence, list(frame_predictions)
+    frames_processed = 0
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
+        result = detector.detect(mp_image)
+
+        if not result.pose_landmarks:
+            continue
+
+        # Extract 132-dim raw landmarks (same as predict.py)
+        raw_landmarks = []
+        for lm in result.pose_landmarks[0]:
+            raw_landmarks.extend([lm.x, lm.y, lm.z, lm.visibility if lm.visibility else 0.0])
+
+        X = np.array(raw_landmarks).reshape(1, -1)
+        proba_array = model.predict_proba(X)[0]
+        class_probs = {
+            cls: float(prob)
+            for cls, prob in zip(model.classes_, proba_array)
+        }
+
+        label, conf = stabilizer.update_with_probabilities(class_probs)
+        frames_processed += 1
+
+    cap.release()
+
+    if label is None:
+        return "unknown", 0.0, frames_processed
+
+    return label, conf, frames_processed
 
 
 def main():
@@ -134,107 +159,115 @@ def main():
     print(f"Loading model: {args.model}")
     model = joblib.load(args.model)
 
-    # Init MediaPipe (matching training extraction — default options)
+    # Load config
     config = load_config(args.config)
+
+    # Init MediaPipe
     options = PoseLandmarkerOptions(
         base_options=BaseOptions(model_asset_path=config.pose.model_path),
         output_segmentation_masks=False,
     )
     detector = PoseLandmarker.create_from_options(options)
 
-    # Collect test videos
+    # Collect first video per class
     videos = collect_test_videos(args.test_dir)
-    print(f"Found {len(videos)} test videos\n")
+    print(f"Found {len(videos)} classes (1 video each)\n")
 
     # Get model's known classes
     known_classes = set(model.classes_)
 
     # Evaluate
-    correct = 0
+    strict_correct = 0
+    family_correct = 0
     total = 0
     skipped = 0
-    per_class_correct = Counter()
-    per_class_total = Counter()
     results = []
 
-    print(f"{'Video':<60} {'True':<22} {'Predicted':<22} {'Conf':>5} {'':>4}")
-    print("=" * 115)
+    print(f"{'Video':<50} {'True':<22} {'Predicted':<22} {'Conf':>5} {'Strict':>7} {'Family':>7}")
+    print("=" * 120)
 
     for video_path, raw_label in videos:
         true_label = normalize_label(raw_label)
+        fname = os.path.basename(video_path)
 
         # Skip classes not in training set
         if true_label not in known_classes:
-            fname = os.path.basename(video_path)
-            print(f"{fname:<60} {true_label:<22} {'SKIP (not in model)':<22}")
+            print(f"{fname:<50} {true_label:<22} {'SKIP (not in model)':<22}")
             skipped += 1
             continue
 
-        landmarks = extract_landmarks_from_video(video_path, detector)
-        if not landmarks:
-            fname = os.path.basename(video_path)
-            print(f"{fname:<60} {true_label:<22} {'SKIP (no pose)':<22}")
-            skipped += 1
-            continue
+        pred_label, confidence, n_frames = predict_video_with_stabilizer(
+            video_path, model, detector, config.exercise,
+        )
 
-        pred_label, confidence, frame_preds = predict_video(model, landmarks)
+        is_strict = pred_label == true_label
+        is_family = is_strict or get_family(pred_label) == get_family(true_label)
 
-        is_correct = pred_label == true_label
-        if is_correct:
-            correct += 1
+        if is_strict:
+            strict_correct += 1
+        if is_family:
+            family_correct += 1
         total += 1
 
-        per_class_total[true_label] += 1
-        if is_correct:
-            per_class_correct[true_label] += 1
-
-        status = "OK" if is_correct else "WRONG"
-        fname = os.path.basename(video_path)
-        print(f"{fname:<60} {true_label:<22} {pred_label:<22} {confidence:>4.0%} {status:>5}")
+        strict_str = "OK" if is_strict else "WRONG"
+        family_str = "OK" if is_family else "WRONG"
+        print(f"{fname:<50} {true_label:<22} {pred_label:<22} {confidence:>4.0%} {strict_str:>7} {family_str:>7}")
 
         results.append({
             "video": video_path,
             "true": true_label,
             "predicted": pred_label,
             "confidence": confidence,
-            "correct": is_correct,
-            "frames_with_pose": len(landmarks),
-            "frame_predictions": frame_preds,
+            "strict_correct": is_strict,
+            "family_correct": is_family,
+            "frames_processed": n_frames,
         })
 
     detector.close()
 
     # Summary
-    accuracy = correct / total if total > 0 else 0
-    print(f"\n{'=' * 115}")
+    strict_acc = strict_correct / total if total > 0 else 0
+    family_acc = family_correct / total if total > 0 else 0
+
+    print(f"\n{'=' * 120}")
     print(f"RESULTS")
-    print(f"{'=' * 115}")
-    print(f"Total videos: {len(videos)}")
-    print(f"Evaluated: {total}")
+    print(f"{'=' * 120}")
+    print(f"Classes evaluated: {total}")
     print(f"Skipped: {skipped}")
-    print(f"Correct: {correct}/{total}")
-    print(f"Accuracy: {accuracy:.1%}")
+    print(f"Strict accuracy:  {strict_correct}/{total} ({strict_acc:.1%})")
+    print(f"Family accuracy:  {family_correct}/{total} ({family_acc:.1%})")
 
-    # Per-class breakdown
-    print(f"\nPer-class accuracy:")
-    for label in sorted(per_class_total.keys()):
-        c = per_class_correct[label]
-        t = per_class_total[label]
-        acc = c / t if t > 0 else 0
-        print(f"  {label:<25} {c}/{t} ({acc:.0%})")
+    # Show families used
+    families_used = set()
+    for r in results:
+        t_fam = get_family(r["true"])
+        p_fam = get_family(r["predicted"])
+        if t_fam != r["true"] or p_fam != r["predicted"]:
+            families_used.add(t_fam)
 
-    # Show wrong predictions grouped
-    wrong = [r for r in results if not r["correct"]]
+    if families_used:
+        print(f"\nExercise families applied:")
+        for fam in sorted(families_used):
+            members = [k for k, v in EXERCISE_FAMILIES.items() if v == fam]
+            print(f"  {fam}: {', '.join(members)}")
+
+    # Show wrong predictions
+    wrong = [r for r in results if not r["family_correct"]]
     if wrong:
-        print(f"\nWrong predictions ({len(wrong)}):")
+        print(f"\nWrong predictions (not even family match): {len(wrong)}")
         for r in wrong:
             fname = os.path.basename(r["video"])
-            # Show frame-level vote breakdown
-            votes = Counter(r["frame_predictions"])
-            vote_str = ", ".join(f"{k}: {v}" for k, v in votes.most_common())
             print(f"  {fname}")
-            print(f"    True: {r['true']}, Predicted: {r['predicted']}")
-            print(f"    Frame votes: {vote_str}")
+            print(f"    True: {r['true']} ({get_family(r['true'])})")
+            print(f"    Pred: {r['predicted']} ({get_family(r['predicted'])})")
+
+    # Show family-saved predictions (wrong strict, correct family)
+    saved = [r for r in results if not r["strict_correct"] and r["family_correct"]]
+    if saved:
+        print(f"\nFamily-saved predictions (wrong strict, OK family): {len(saved)}")
+        for r in saved:
+            fname = os.path.basename(r["video"])
+            print(f"  {fname}: {r['true']} -> {r['predicted']} (family: {get_family(r['true'])})")
 
     print(f"\nDone!")
 

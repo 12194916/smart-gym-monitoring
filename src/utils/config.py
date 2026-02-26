@@ -32,6 +32,9 @@ class PoseConfig:
     model_path: str = "data/models/pose_landmarker_heavy.task"
     min_detection_confidence: float = 0.5
     min_tracking_confidence: float = 0.5
+    max_poses: int = 3
+    person_size_weight: float = 0.6
+    person_center_weight: float = 0.4
 
 
 @dataclass
@@ -41,11 +44,15 @@ class ExerciseConfig:
     window_size: int = 30
     min_classification_score: float = 0.3
     stabilizer_window: int = 5
+    stabilizer_ema_alpha: float = 0.15
+    stabilizer_hysteresis_margin: float = 0.15
+    stabilizer_min_hold_frames: int = 15
 
 
 @dataclass
 class RepCounterConfig:
     min_rep_duration_ms: int = 800
+    angle_smoothing_window: int = 5
 
 
 @dataclass
