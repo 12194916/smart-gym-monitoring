@@ -23,6 +23,8 @@ env/
 data/videos/*
 data/models/*
 data/enrollment/*
+data/faces/*
+!data/faces/.gitkeep
 data/gallery.pkl
 !data/videos/.gitkeep
 !data/models/.gitkeep

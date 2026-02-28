@@ -1,7 +1,7 @@
 face_id:
   model_name: "buffalo_l"
   gallery_path: "data/gallery.pkl"
-  enrollment_dir: "data/enrollment"
+  enrollment_dir: "data/faces"
   det_size: [640, 640]
   similarity_threshold: 0.4
   max_identification_frames: 60
