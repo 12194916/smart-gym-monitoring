@@ -11,8 +11,6 @@ from pathlib import Path
 VIDEOS = {
     "outputs/chest fly machine_1_annotated.mp4": "assets/chest_fly_machine.gif",
     "outputs/leg extension_1_annotated.mp4": "assets/leg_extension.gif",
-    "outputs/romanian deadlift_2_annotated.mp4": "assets/romanian_deadlift.gif",
-    "outputs/barbell biceps curl_1_annotated.mp4": "assets/barbell_biceps_curl.gif",
 }
 
 # GIF settings
