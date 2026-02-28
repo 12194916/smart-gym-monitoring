@@ -1,0 +1,52 @@
+{
+  "video": {
+    "path": "data/videos/test/romanian deadlift/romanian deadlift_2.mp4",
+    "fps": 23.98,
+    "total_frames": 461,
+    "duration_seconds": 19.23
+  },
+  "identification": {
+    "user": "sarah_chen",
+    "confidence": 0.7065
+  },
+  "exercise": {
+    "label": "deadlift",
+    "confidence": 0.6766
+  },
+  "rep_counting": {
+    "type": "rep_count",
+    "count": 5,
+    "reps": [
+      {
+        "rep_number": 1,
+        "frame": 44,
+        "timestamp_ms": 1835.2,
+        "angle_at_count": 162.6
+      },
+      {
+        "rep_number": 2,
+        "frame": 107,
+        "timestamp_ms": 4462.8,
+        "angle_at_count": 164.6
+      },
+      {
+        "rep_number": 3,
+        "frame": 163,
+        "timestamp_ms": 6798.5,
+        "angle_at_count": 102.3
+      },
+      {
+        "rep_number": 4,
+        "frame": 278,
+        "timestamp_ms": 11594.9,
+        "angle_at_count": 102.2
+      },
+      {
+        "rep_number": 5,
+        "frame": 339,
+        "timestamp_ms": 14139.1,
+        "angle_at_count": 98.3
+      }
+    ]
+  }
+}

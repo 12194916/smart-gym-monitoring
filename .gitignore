@@ -30,9 +30,9 @@ data/gallery.pkl
 !data/models/.gitkeep
 !data/enrollment/.gitkeep
 
-# Outputs
-outputs/*
-!outputs/.gitkeep
+# Outputs (keep JSON results, ignore videos)
+outputs/*.mp4
+outputs/*.avi
 
 # Environment
 .env

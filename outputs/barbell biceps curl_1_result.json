@@ -1,0 +1,64 @@
+{
+  "video": {
+    "path": "data/videos/test/barbell biceps curl/barbell biceps curl_1.mp4",
+    "fps": 30.0,
+    "total_frames": 795,
+    "duration_seconds": 26.5
+  },
+  "identification": {
+    "user": "david_kim",
+    "confidence": 0.5765
+  },
+  "exercise": {
+    "label": "barbell biceps curl",
+    "confidence": 0.5668
+  },
+  "rep_counting": {
+    "type": "rep_count",
+    "count": 7,
+    "reps": [
+      {
+        "rep_number": 1,
+        "frame": 47,
+        "timestamp_ms": 1566.7,
+        "angle_at_count": 45.0
+      },
+      {
+        "rep_number": 2,
+        "frame": 137,
+        "timestamp_ms": 4566.7,
+        "angle_at_count": 47.8
+      },
+      {
+        "rep_number": 3,
+        "frame": 211,
+        "timestamp_ms": 7033.3,
+        "angle_at_count": 62.3
+      },
+      {
+        "rep_number": 4,
+        "frame": 290,
+        "timestamp_ms": 9666.7,
+        "angle_at_count": 51.5
+      },
+      {
+        "rep_number": 5,
+        "frame": 388,
+        "timestamp_ms": 12933.3,
+        "angle_at_count": 81.3
+      },
+      {
+        "rep_number": 6,
+        "frame": 544,
+        "timestamp_ms": 18133.3,
+        "angle_at_count": 146.7
+      },
+      {
+        "rep_number": 7,
+        "frame": 705,
+        "timestamp_ms": 23500.0,
+        "angle_at_count": 151.5
+      }
+    ]
+  }
+}

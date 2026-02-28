@@ -1,0 +1,40 @@
+{
+  "video": {
+    "path": "data/videos/test/leg extension/leg extension_1.mp4",
+    "fps": 25.0,
+    "total_frames": 337,
+    "duration_seconds": 13.48
+  },
+  "identification": {
+    "user": "james_carter",
+    "confidence": 0.8808
+  },
+  "exercise": {
+    "label": "leg extension",
+    "confidence": 0.9597
+  },
+  "rep_counting": {
+    "type": "rep_count",
+    "count": 3,
+    "reps": [
+      {
+        "rep_number": 1,
+        "frame": 96,
+        "timestamp_ms": 3840.0,
+        "angle_at_count": 118.6
+      },
+      {
+        "rep_number": 2,
+        "frame": 178,
+        "timestamp_ms": 7120.0,
+        "angle_at_count": 120.7
+      },
+      {
+        "rep_number": 3,
+        "frame": 262,
+        "timestamp_ms": 10480.0,
+        "angle_at_count": 122.7
+      }
+    ]
+  }
+}
